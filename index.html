@@ -3115,15 +3115,21 @@ function renderRoster() {
   if (currentUser && ['admin','coordinator'].includes(currentUser.role)) {
     apiFetch('/users').then(({ok, data}) => {
       if (ok && Array.isArray(data)) {
+        // replace rosterData with fresh data from API
         data.forEach(u => {
           if (!rosterData.find(r => r.name === u.nickname)) {
             rosterData.push({
-              name: u.nickname, initials: u.nickname.slice(0,2).toUpperCase(),
-              phone: u.phone||'—', email: u.email, roles: ['NPC'], avail: 0
+              name: u.nickname,
+              initials: u.nickname.slice(0,2).toUpperCase(),
+              phone: u.phone||'—',
+              email: u.email,
+              roles: ['NPC'],
+              avail: 0
             });
           }
         });
         _renderRosterUI();
+        renderDashboardStats();
       }
     });
   }
@@ -4352,6 +4358,8 @@ function applyUserRole(user) {
   } else {
     document.getElementById('page-dashboard')?.classList.add('active');
     document.querySelector('.nav-item')?.classList.add('active');
+    // sync roster from API
+    setTimeout(() => renderRoster(), 500);
   }
 
   toast('ยินดีต้อนรับ ' + user.nickname + ' · ' + (roleLabel[user.role]||user.role));
