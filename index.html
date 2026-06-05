@@ -3111,6 +3111,26 @@ function rosterFilter(el, val) {
 }
 
 function renderRoster() {
+  // sync from API if admin
+  if (currentUser && ['admin','coordinator'].includes(currentUser.role)) {
+    apiFetch('/users').then(({ok, data}) => {
+      if (ok && Array.isArray(data)) {
+        data.forEach(u => {
+          if (!rosterData.find(r => r.name === u.nickname)) {
+            rosterData.push({
+              name: u.nickname, initials: u.nickname.slice(0,2).toUpperCase(),
+              phone: u.phone||'—', email: u.email, roles: ['NPC'], avail: 0
+            });
+          }
+        });
+        _renderRosterUI();
+      }
+    });
+  }
+  _renderRosterUI();
+}
+
+function _renderRosterUI() {
   const list = document.getElementById('roster-list');
   if (!list) return;
   const search = (document.getElementById('roster-search')?.value || '').toLowerCase();
@@ -4485,7 +4505,7 @@ function doRegister() {
     showRegError('ชื่อเล่นนี้มีในระบบแล้ว'); return;
   }
 
-  // Try real API first
+  // Try real API
   apiFetch('/auth/register', {
     method: 'POST',
     body: JSON.stringify({
@@ -4495,35 +4515,47 @@ function doRegister() {
     })
   }).then(({ ok, data, status }) => {
     if (ok && data.token) {
-      // API success
+      // API success — save token
       API_TOKEN = data.token;
       localStorage.setItem('banbol_token', API_TOKEN);
-      // also push to local users for offline use
-      users.push({id: data.user.id, name, nickname, email, phone, password: pass, role});
-    } else if (status === 0) {
-      // offline — local only
-    } else if (!ok) {
+      // push to local arrays for offline display
+      if (!users.find(u => u.email === email)) {
+        users.push({id: data.user.id, name, nickname, email, phone, password: pass, role: data.user.role});
+      }
+      if (!rosterData.find(r => r.name === nickname)) {
+        rosterData.push({ name: nickname, initials: nickname.slice(0,2).toUpperCase(), phone, email, roles:[role==='voice_actor'?'NPC':'ผู้ประสานงาน'], avail:0 });
+        try { renderRoster(); renderAvailTable(); renderDashboardStats(); } catch(e) {}
+      }
+      simulateEmail(email, nickname, 'welcome');
+      sucEl.textContent = `สมัครสมาชิกสำเร็จ! ส่งอีเมลยืนยันไปที่ ${email} แล้ว`;
+      sucEl.style.display = 'block';
+      setTimeout(() => {
+        closeRegister();
+        document.getElementById('login-email').value = email;
+        document.getElementById('login-pass').value = pass;
+        document.getElementById('login-email').style.borderColor = 'var(--accent)';
+        document.getElementById('login-pass').style.borderColor  = 'var(--accent)';
+      }, 2000);
+    } else if (status === 0 || !data.message) {
+      // API unreachable — local fallback
+      if (!users.find(u => u.email === email)) {
+        users.push({id: users.length+1, name, nickname, email, phone, password: pass, role});
+      }
+      if (!rosterData.find(r => r.name === nickname)) {
+        rosterData.push({ name: nickname, initials: nickname.slice(0,2).toUpperCase(), phone, email, roles:[role==='voice_actor'?'NPC':'ผู้ประสานงาน'], avail:0 });
+        try { renderRoster(); renderAvailTable(); renderDashboardStats(); } catch(e) {}
+      }
+      simulateEmail(email, nickname, 'welcome');
+      sucEl.textContent = `สมัครสมาชิกสำเร็จ! (offline mode)`;
+      sucEl.style.display = 'block';
+      setTimeout(() => {
+        closeRegister();
+        document.getElementById('login-email').value = email;
+        document.getElementById('login-pass').value = pass;
+      }, 2000);
+    } else {
       showRegError(data.message || 'สมัครสมาชิกไม่สำเร็จ');
-      return;
     }
-
-    // sync to rosterData
-    if (!rosterData.find(r => r.name === nickname)) {
-      rosterData.push({ name: nickname, initials: nickname.slice(0,2).toUpperCase(), phone, email, roles:[role==='voice_actor'?'NPC':'ผู้ประสานงาน'], avail:0 });
-      try { renderRoster(); renderAvailTable(); renderDashboardStats(); } catch(e) {}
-    }
-
-    simulateEmail(email, nickname, 'welcome');
-    sucEl.textContent = `สมัครสมาชิกสำเร็จ! ส่งอีเมลยืนยันไปที่ ${email} แล้ว`;
-    sucEl.style.display = 'block';
-
-    setTimeout(() => {
-      closeRegister();
-      document.getElementById('login-email').value = email;
-      document.getElementById('login-pass').value = pass;
-      document.getElementById('login-email').style.borderColor = 'var(--accent)';
-      document.getElementById('login-pass').style.borderColor  = 'var(--accent)';
-    }, 2000);
   });
 }
 
