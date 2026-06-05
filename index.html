@@ -3250,7 +3250,7 @@ function _renderRosterUI() {
     <div class="person-card" id="roster-card-${idx}">
       <div class="person-avatar">${a.initials}</div>
       <div class="person-info" style="flex:1">
-        <div class="person-name">${a.name}</div>
+        <div class="person-name" id="roster-name-${idx}">${a.name}</div>
         <div class="person-meta">${a.phone} · ${a.email}</div>
         <div id="roster-role-tags-${idx}" class="role-tags" style="margin-top:8px;display:flex;gap:5px;flex-wrap:wrap;align-items:center">
           ${tags}${addBtn}
@@ -3259,16 +3259,116 @@ function _renderRosterUI() {
       <div style="flex-shrink:0;text-align:right">
         <div class="person-avail">${a.avail}<span>วันว่าง/เดือน</span></div>
         <div style="display:flex;justify-content:flex-end;margin-top:8px;gap:6px">
-          <button class="btn btn-sm" onclick="openRosterRoleEditor(${idx}, event)">แก้ไข Role</button>
-          <button class="btn btn-sm btn-accent">ดูประวัติ</button>
+          <button class="btn btn-sm" onclick="startEditRosterName(${idx})">แก้ไขชื่อ</button>
+          <button class="btn btn-sm" onclick="confirmDeleteRosterActor(${idx})"
+            style="color:var(--red);border-color:var(--red)"
+            onmouseover="this.style.background='var(--red-bg)'" onmouseout="this.style.background='none'">ลบ</button>
         </div>
       </div>
     </div>`;
   }).join('');
 }
 
+function startEditRosterName(idx) {
+  const actor = rosterData[idx];
+  const nameEl = document.getElementById('roster-name-' + idx);
+  if (!nameEl) return;
+  const inp = document.createElement('input');
+  inp.value = actor.name;
+  inp.style.cssText = 'padding:3px 8px;background:var(--bg3);border:1px solid var(--accent);border-radius:8px;color:var(--text);font-family:var(--font);font-size:14px;font-weight:500;outline:none;width:160px';
+  nameEl.replaceWith(inp);
+  inp.focus(); inp.select();
+  const save = async () => {
+    const newName = inp.value.trim() || actor.name;
+    const oldName = actor.name;
+    if (newName === oldName) { renderRoster(); return; }
+    // update rosterData
+    rosterData[idx].name = newName;
+    rosterData[idx].initials = newName.slice(0,2).toUpperCase();
+    // update users array
+    const u = users.find(x => x.nickname === oldName);
+    if (u) u.nickname = newName;
+    // update API
+    const apiUser = await apiFetch('/users').then(r => r.ok ? r.data.find(x => x.nickname === oldName) : null);
+    if (apiUser) {
+      await apiFetch(`/users/${apiUser.id}`, {
+        method: 'PUT',
+        body: JSON.stringify({ name: newName, nickname: newName })
+      });
+    }
+    // update crew references
+    Object.keys(projectCrew).forEach(code => {
+      const crew = projectCrew[code];
+      Object.keys(crew).forEach(key => {
+        const i = (crew[key]||[]).indexOf(oldName);
+        if (i > -1) crew[key][i] = newName;
+      });
+    });
+    // update assignData
+    Object.keys(assignData).forEach(code => {
+      (assignData[code]||[]).forEach(c => { if (c.actor === oldName) c.actor = newName; });
+    });
+    renderRoster();
+    renderAssign();
+    renderPayment();
+    buildAssignProjectSelector();
+    toast('เปลี่ยนชื่อ "' + oldName + '" → "' + newName + '" แล้ว');
+  };
+  inp.addEventListener('blur', save);
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') inp.blur(); if (e.key === 'Escape') { renderRoster(); } });
+}
+
+function confirmDeleteRosterActor(idx) {
+  const actor = rosterData[idx];
+  if (!confirm(`ลบ "${actor.name}" ออกจากระบบ?\n\nจะลบข้อมูลทั้งหมดของ user นี้รวมถึงการมอบหมายงาน`)) return;
+  deleteRosterActor(idx);
+}
+
+async function deleteRosterActor(idx) {
+  const actor = rosterData[idx];
+  const name = actor.name;
+
+  // find user id from API
+  const apiRes = await apiFetch('/users');
+  if (apiRes.ok && Array.isArray(apiRes.data)) {
+    const apiUser = apiRes.data.find(u => u.nickname === name || u.name === name);
+    if (apiUser) {
+      await apiFetch(`/users/${apiUser.id}`, { method: 'DELETE' });
+    }
+  }
+
+  // remove from rosterData
+  rosterData.splice(idx, 1);
+
+  // remove from users array
+  const ui = users.findIndex(u => u.nickname === name);
+  if (ui > -1) users.splice(ui, 1);
+
+  // remove from all projectCrew
+  Object.keys(projectCrew).forEach(code => {
+    Object.keys(projectCrew[code]).forEach(key => {
+      projectCrew[code][key] = (projectCrew[code][key]||[]).filter(n => n !== name);
+    });
+    _syncCrewToAPI(code);
+  });
+
+  // remove from assignData
+  Object.keys(assignData).forEach(code => {
+    assignData[code] = (assignData[code]||[]).filter(c => c.actor !== name);
+  });
+
+  // remove from paymentRows crew
+  renderRoster();
+  renderAvailTable();
+  renderAssign();
+  renderAllProjectViews();
+  renderPayment();
+  updateAllActorIncome();
+  renderDashboardStats();
+  toast('ลบ "' + name + '" ออกจากระบบแล้ว');
+}
+
 function openRosterRoleEditor(idx, evt) {
-  evt.stopPropagation();
   closeRosterRoleEditor();
   const actor = rosterData[idx];
   const tagEl = document.getElementById('roster-role-tags-' + idx);
@@ -4306,6 +4406,39 @@ async function apiFetch(path, opts = {}) {
   }
 }
 
+// ─── AUTO-REFRESH USER PROFILE FROM API ──────────────────────────────
+// ทุกครั้งที่ page load และมี token — ดึงข้อมูล user ล่าสุดจาก API
+async function refreshCurrentUserFromAPI() {
+  if (!API_TOKEN) return;
+  const { ok, data } = await apiFetch('/auth/me');
+  if (ok && data.id) {
+    // update currentUser with latest data from server
+    if (currentUser) {
+      const oldNickname = currentUser.nickname;
+      currentUser.name     = data.name;
+      currentUser.nickname = data.nickname;
+      currentUser.email    = data.email;
+      currentUser.phone    = data.phone;
+      currentUser.role     = data.role;
+
+      // update sidebar display
+      const avatar = document.querySelector('.user-avatar');
+      const uname  = document.querySelector('.user-name');
+      const urole  = document.querySelector('.user-role');
+      if (avatar) avatar.textContent = data.nickname.slice(0,2).toUpperCase();
+      if (uname)  uname.textContent  = data.nickname;
+      if (urole)  urole.textContent  = roleLabel[data.role] || data.role;
+
+      // update greeting on actor dashboard if name changed
+      if (oldNickname !== data.nickname) {
+        const gnEl = document.getElementById('actor-greeting-name');
+        if (gnEl) gnEl.textContent = 'สวัสดี ' + data.nickname;
+        updateActorAvailStat(data.nickname);
+      }
+    }
+  }
+}
+
 // ─── LOGIN SCREEN MODE ───
 // ?dev=1  → แสดงบัญชีทดสอบ (สำหรับ admin/dev เท่านั้น)
 // ?actor=1 → หน้า login ของนักพากย์ (ลิงก์แยก)
@@ -4430,6 +4563,9 @@ function loginSuccess(user) {
     app.style.transition = 'opacity 0.3s ease';
     setTimeout(() => { app.style.opacity = '1'; }, 30);
     applyUserRole(user);
+    // refresh profile from API every 30 seconds to catch admin changes
+    refreshCurrentUserFromAPI();
+    setInterval(refreshCurrentUserFromAPI, 30000);
   }, 450);
 }
 
