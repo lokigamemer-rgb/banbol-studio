@@ -2154,12 +2154,26 @@ function setAllDays(st) {
 }
 
 function saveAvail() {
-  // sync current user's dayStates back to allUserDays (already done on click, but ensure full write)
   const name = currentUser?.nickname || 'Nutto';
   const mk = monthKey();
   if (!allUserDays[name]) allUserDays[name] = {};
   allUserDays[name][mk] = {...dayStates};
-  // re-render admin avail table so admin sees the update
+
+  // sync to API if logged in
+  if (currentUser && API_TOKEN) {
+    const days = {};
+    Object.entries(dayStates).forEach(([d, st]) => {
+      const map = { av:'available', un:'unavailable', ev:'evening' };
+      days[d] = map[st] || 'available';
+    });
+    apiFetch('/availability', {
+      method: 'POST',
+      body: JSON.stringify({ user_id: currentUser.id, month: mk, days })
+    }).then(({ok}) => {
+      if (ok) console.log('Availability saved to API');
+    });
+  }
+
   renderAvailTable();
   buildActorMiniCal();
   updateActorAvailStat(currentUser?.nickname);
@@ -2297,14 +2311,45 @@ function renderDashboardProjects() {
 function renderActorJobs() {
   const list = document.getElementById('actor-jobs-list');
   if (!list) return;
-
-  // use currentUser when logged in, fallback for preview
   const myName = currentUser?.nickname || '';
   if (!myName) {
     list.innerHTML = `<div style="text-align:center;padding:20px;color:var(--text3);font-size:13px">กรุณาเข้าสู่ระบบ</div>`;
     return;
   }
 
+  // fetch projects from API to get latest crew data
+  if (API_TOKEN) {
+    apiFetch('/projects').then(({ok, data}) => {
+      if (ok && Array.isArray(data)) {
+        // update projectsData and projectCrew from API
+        data.forEach(p => {
+          if (!projectsData.find(x => x.code === p.code)) {
+            projectsData.push({
+              code: p.code, title: p.title, client: p.client,
+              episodes: p.episodes, totalMins: p.total_minutes,
+              due: p.due_date ? p.due_date.slice(0,10) : '',
+              status: p.status, lateDays: p.late_days||0, fine: p.fine_amount||0
+            });
+          }
+          // sync crew
+          if (p.crew && Array.isArray(p.crew)) {
+            if (!projectCrew[p.code]) projectCrew[p.code] = {};
+            p.crew.forEach(c => {
+              if (!projectCrew[p.code][c.crew_role]) projectCrew[p.code][c.crew_role] = [];
+              if (!projectCrew[p.code][c.crew_role].includes(c.nickname)) {
+                projectCrew[p.code][c.crew_role].push(c.nickname);
+              }
+            });
+          }
+        });
+        _renderActorJobsUI(myName, list);
+      }
+    });
+  }
+  _renderActorJobsUI(myName, list);
+}
+
+function _renderActorJobsUI(myName, list) {
   // ── gather all roles this user has across every project ──
   const myProjects = projectsData
     .map(p => {
@@ -2535,6 +2580,8 @@ function crewAddFromSelect(code, key, sel) {
   crew[key].push(name);
   refreshCrewRow(code, key);
   syncCrewToAssign(code);
+  // sync to API
+  _syncCrewToAPI(code);
   toast('เพิ่ม ' + name + ' → ' + crewRoleConfig.find(r=>r.key===key)?.label);
 }
 
@@ -2667,8 +2714,40 @@ function removeCrewMember(code, key, mi) {
   const name = crew[key].splice(mi, 1)[0];
   refreshCrewRow(code, key);
   syncCrewToAssign(code);
+  // sync to API
+  _syncCrewToAPI(code);
+  renderPayment();
+  updateAllActorIncome();
   toast('ลบ ' + name + ' ออกแล้ว');
 }
+
+// ── helper: sync entire crew of a project to API ──────────────────────
+function _syncCrewToAPI(code) {
+  if (!API_TOKEN) return;
+  const proj = projectsData.find(p => p.code === code);
+  if (!proj) return;
+  // find project id — use code as fallback
+  apiFetch('/projects').then(({ok, data}) => {
+    if (!ok) return;
+    const p = data.find(x => x.code === code);
+    if (!p) return;
+    const crew = getProjectCrew(code);
+    const crewArr = [];
+    crewRoleConfig.forEach(rc => {
+      (crew[rc.key]||[]).forEach(name => {
+        const user = users.find(u => u.nickname === name) ||
+                     rosterData.find(r => r.name === name);
+        if (user) crewArr.push({ user_id: user.id, crew_role: rc.key });
+      });
+    });
+    apiFetch(`/projects/${p.id}/crew`, {
+      method: 'POST',
+      body: JSON.stringify({ crew: crewArr })
+    });
+  });
+}
+
+
 function startEditCrew(code, key, mi, el) {
   const oldName = el.textContent;
   const inp = document.createElement('input');
@@ -3335,6 +3414,31 @@ function filterAvailTable(el, role) {
 }
 
 function renderAvailTable() {
+  const tbl = document.getElementById('avail-admin-tbl');
+  if (!tbl) return;
+
+  // fetch team availability from API if admin
+  if (currentUser && ['admin','coordinator'].includes(currentUser.role) && API_TOKEN) {
+    const mk = calYear + '-' + calMonth;
+    apiFetch(`/availability/team/${mk}`).then(({ok, data}) => {
+      if (ok && Array.isArray(data)) {
+        data.forEach(row => {
+          const name = row.nickname;
+          const monthKey2 = mk;
+          if (!allUserDays[name]) allUserDays[name] = {};
+          if (!allUserDays[name][monthKey2]) allUserDays[name][monthKey2] = {};
+          const day = new Date(row.date).getDate();
+          const map = { available:'av', unavailable:'un', evening:'ev' };
+          allUserDays[name][monthKey2][day] = map[row.status] || 'av';
+        });
+        _renderAvailTableUI();
+      }
+    });
+  }
+  _renderAvailTableUI();
+}
+
+function _renderAvailTableUI() {
   const tbl = document.getElementById('avail-admin-tbl');
   if (!tbl) return;
   const search = (document.getElementById('avail-search')?.value || '').toLowerCase();
