@@ -4354,12 +4354,29 @@ function applyUserRole(user) {
     document.getElementById('page-actor-dashboard')?.classList.add('active');
     syncDayStates();
     buildCalendar();
+    // sync payments for income display
+    apiFetch('/payments').then(({ok, data}) => {
+      if (ok && Array.isArray(data)) {
+        data.forEach(pay => {
+          if (!paymentRows.find(r => r.code === pay.code)) {
+            paymentRows.push({
+              code: pay.code, title: pay.title || pay.code,
+              client: pay.client || '', due: pay.due_date ? pay.due_date.slice(0,10) : '',
+              gross: parseFloat(pay.gross_amount)||0,
+              fine: parseFloat(pay.fine_amount)||0,
+              status: pay.status || 'pending'
+            });
+          }
+        });
+        updateAllActorIncome();
+      }
+    });
     buildActorDashboard(user);
   } else {
     document.getElementById('page-dashboard')?.classList.add('active');
     document.querySelector('.nav-item')?.classList.add('active');
-    // sync roster from API
-    setTimeout(() => renderRoster(), 500);
+    // sync ALL data from API on admin login
+    syncAllFromAPI();
   }
 
   toast('ยินดีต้อนรับ ' + user.nickname + ' · ' + (roleLabel[user.role]||user.role));
@@ -4477,7 +4494,83 @@ function sendForgot() {
   }
 }
 
-// ─── REGISTER ───
+// ─── SYNC ALL DATA FROM API ───────────────────────────────────────────
+async function syncAllFromAPI() {
+  try {
+    // 1. Sync users → rosterData + adminActors + assignActors
+    const uRes = await apiFetch('/users');
+    if (uRes.ok && Array.isArray(uRes.data)) {
+      uRes.data.forEach(u => {
+        if (!rosterData.find(r => r.name === u.nickname)) {
+          rosterData.push({
+            name: u.nickname,
+            initials: u.nickname.slice(0,2).toUpperCase(),
+            phone: u.phone || '—',
+            email: u.email,
+            roles: ['NPC'],
+            avail: 0
+          });
+        }
+        // also add to users array for login fallback
+        if (!users.find(x => x.email === u.email)) {
+          users.push({ id: u.id, name: u.name, nickname: u.nickname, email: u.email, phone: u.phone, role: u.role });
+        }
+      });
+    }
+
+    // 2. Sync projects → projectsData
+    const pRes = await apiFetch('/projects');
+    if (pRes.ok && Array.isArray(pRes.data)) {
+      pRes.data.forEach(p => {
+        if (!projectsData.find(x => x.code === p.code)) {
+          projectsData.push({
+            code: p.code, title: p.title, client: p.client,
+            episodes: p.episodes, totalMins: p.total_minutes,
+            due: p.due_date ? p.due_date.slice(0,10) : '',
+            status: p.status, lateDays: p.late_days || 0,
+            fine: p.fine_amount || 0
+          });
+        }
+      });
+    }
+
+    // 3. Sync payments → paymentRows
+    const payRes = await apiFetch('/payments');
+    if (payRes.ok && Array.isArray(payRes.data)) {
+      payRes.data.forEach(pay => {
+        const proj = projectsData.find(p => p.code === pay.code);
+        if (!paymentRows.find(r => r.code === pay.code)) {
+          paymentRows.push({
+            code: pay.code,
+            title: pay.title || (proj ? proj.title : pay.code),
+            client: pay.client || (proj ? proj.client : ''),
+            due: pay.due_date ? pay.due_date.slice(0,10) : '',
+            gross: parseFloat(pay.gross_amount) || 0,
+            fine: parseFloat(pay.fine_amount) || 0,
+            status: pay.status || 'pending'
+          });
+        }
+      });
+    }
+
+    // 4. Re-render everything
+    renderRoster();
+    renderAvailTable();
+    renderProjects();
+    buildAssignProjectSelector();
+    buildRecProjectSelector();
+    initPaymentRows();
+    renderPayment();
+    renderDashboardStats();
+    updateAllActorIncome();
+
+    toast('ซิงค์ข้อมูลจากระบบแล้ว');
+  } catch(e) {
+    console.warn('syncAllFromAPI error:', e);
+  }
+}
+
+
 function showRegister() {
   ['reg-name','reg-nickname','reg-email','reg-phone','reg-pass','reg-pass2'].forEach(id => {
     const el = document.getElementById(id); if (el) el.value = '';
