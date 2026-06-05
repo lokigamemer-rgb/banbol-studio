@@ -4161,7 +4161,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ─── API CONFIG ───────────────────────────────────────────────────────
 // เปลี่ยน URL นี้ให้ตรงกับ Render service ของคุณ
-const API_BASE = window.BANBOL_API || 'https://banbol-api12.up.railway.app/api';
+const API_BASE = window.BANBOL_API || 'https://banbol-api12-production.up.railway.app/api';
 let API_TOKEN  = localStorage.getItem('banbol_token') || null;
 
 async function apiFetch(path, opts = {}) {
